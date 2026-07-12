@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, collection, query, where, onSnapshot } from "firebase/firestore";
 import { auth, db } from "../firebase/config";
 import { Link, useNavigate } from "react-router-dom";
 import { 
@@ -15,7 +15,9 @@ import {
   AlertCircle, 
   ArrowRight, 
   UserPlus,
-  HelpCircle
+  HelpCircle,
+  MapPin,
+  Loader2
 } from "lucide-react";
 import logo from "../assets/logo/only-logo-sap-kotak.png";
 
@@ -25,6 +27,7 @@ export default function Register() {
     nik: "",
     noHandphone: "",
     jabatan: "karyawan",
+    areaId: "",
     email: "",
     password: "",
     konfirmasiPassword: "",
@@ -32,11 +35,34 @@ export default function Register() {
     role: ""
   });
 
+  // Daftar area aktif, diambil real-time dari Firestore
+  const [areaList, setAreaList] = useState([]);
+  const [loadingAreas, setLoadingAreas] = useState(true);
+
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const q = query(collection(db, "areas"), where("isAktif", "==", true));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.nama_area || "").localeCompare(b.nama_area || ""));
+        setAreaList(list);
+        setLoadingAreas(false);
+      },
+      (err) => {
+        console.error(err);
+        setLoadingAreas(false);
+      }
+    );
+    return () => unsub();
+  }, []);
 
   const handleChange = (e) => {
     setFormData((prev) => ({
@@ -58,9 +84,14 @@ export default function Register() {
     if (!formData.namaLengkap.trim() || !formData.nik.trim()) {
       return setError("Nama Lengkap dan NIK wajib diisi.");
     }
+    if (!formData.areaId) {
+      return setError("Silakan pilih Area penempatan Anda.");
+    }
 
     setLoading(true);
     try {
+      const selectedArea = areaList.find((a) => a.id === formData.areaId);
+
       const userCredential = await createUserWithEmailAndPassword(
         auth,
         formData.email,
@@ -73,6 +104,8 @@ export default function Register() {
         nik: formData.nik.trim(),
         noHandphone: formData.noHandphone.trim(),
         jabatan: formData.jabatan,
+        areaId: formData.areaId,
+        namaArea: selectedArea?.nama_area || "",
         email: formData.email.trim(),
         uid: user.uid,
         createdAt: new Date().toISOString(),
@@ -257,6 +290,54 @@ export default function Register() {
                   </svg>
                 </div>
               </div>
+            </div>
+
+            {/* Dropdown Area */}
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                Area Penempatan <span className="text-red-500">*</span>
+              </label>
+              <div className="relative group">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                  {loadingAreas ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <MapPin className="w-4 h-4" />
+                  )}
+                </div>
+                <select
+                  name="areaId"
+                  value={formData.areaId}
+                  onChange={handleChange}
+                  required
+                  disabled={loadingAreas}
+                  className="w-full bg-slate-50/50 border border-slate-200/80 rounded-2xl pl-11 pr-10 py-3 text-xs text-slate-900 appearance-none cursor-pointer focus:bg-white focus:outline-none focus:border-[#740223] disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <option value="" disabled>
+                    {loadingAreas
+                      ? "Memuat daftar area..."
+                      : areaList.length === 0
+                      ? "Belum ada area tersedia"
+                      : "Pilih area penempatan"}
+                  </option>
+                  {areaList.map((area) => (
+                    <option key={area.id} value={area.id}>
+                      {area.nama_area}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none text-slate-400">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+              {!loadingAreas && areaList.length === 0 && (
+                <p className="text-[10px] text-amber-600 font-medium mt-1.5 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Belum ada area aktif. Hubungi HRD/Admin sebelum mendaftar.
+                </p>
+              )}
             </div>
 
             {/* Input Email */}

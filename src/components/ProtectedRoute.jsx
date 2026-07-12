@@ -18,7 +18,7 @@ export default function ProtectedRoute({ children }) {
   }
 
   // Sudah login tapi ternyata admin → arahkan ke panel admin
-  if (userProfile?.jabatan === "admin") {
+  if (userProfile?.role === "admin") {
     return <Navigate to="/admin" replace />;
   }
 

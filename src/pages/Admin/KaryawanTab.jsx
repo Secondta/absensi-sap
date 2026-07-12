@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { db } from "../../firebase/config";
-import { collection, onSnapshot, doc, updateDoc, deleteDoc } from "firebase/firestore";
+import { collection, onSnapshot, getDocs, doc, updateDoc, deleteDoc } from "firebase/firestore";
 import {
   Search, FileSpreadsheet, Loader2, X, Save, Trash2,
   User, Phone, Mail, Hash, Briefcase, ChevronDown, ChevronUp,
   CheckCircle2, AlertCircle, MapPin, Heart, Users, Calendar,
-  UserX, UserCheck
+  UserX, UserCheck, Wallet, SlidersHorizontal, Inbox
 } from "lucide-react";
 import Swal from "sweetalert2";
 import * as XLSX from "xlsx";
@@ -23,9 +23,16 @@ const fieldLabel = "block text-[10px] font-bold uppercase tracking-wider text-sl
 
 export default function KaryawanTab() {
   const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  // Menandakan apakah admin sudah menekan "Tampilkan Data"
+  const [hasSearched, setHasSearched] = useState(false);
   const [search, setSearch] = useState("");
   const [filterAktif, setFilterAktif] = useState("aktif"); // "aktif" | "nonaktif" | "semua"
+  const [filterArea, setFilterArea] = useState("semua"); // "semua" | areaId
+
+  // Daftar area (semua, aktif maupun nonaktif) untuk keperluan admin memilih/menampilkan — ringan, tetap realtime
+  const [areaList, setAreaList] = useState([]);
+  const [loadingAreas, setLoadingAreas] = useState(true);
 
   const [selectedUser, setSelectedUser] = useState(null);
   const [modalMode, setModalMode] = useState("view");
@@ -33,20 +40,39 @@ export default function KaryawanTab() {
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState("pribadi");
 
+  // ── Ambil data karyawan HANYA saat tombol "Tampilkan Data" ditekan ──────
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const snapshot = await getDocs(collection(db, "users"));
+      const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setUsers(data);
+    } catch (error) {
+      console.error("Error fetching users: ", error);
+      Swal.fire({ icon: "error", title: "Gagal Memuat Data", text: "Terjadi kesalahan saat mengambil data karyawan.", confirmButtonColor: "#740223" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApplyFilter = async () => {
+    setHasSearched(true);
+    await fetchUsers();
+  };
+
   useEffect(() => {
     const unsubscribe = onSnapshot(
-      collection(db, "users"),
+      collection(db, "areas"),
       (snapshot) => {
-        const data = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setUsers(data);
-        setLoading(false);
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.nama_area || "").localeCompare(b.nama_area || ""));
+        setAreaList(list);
+        setLoadingAreas(false);
       },
       (error) => {
-        console.error("Error fetching users: ", error);
-        setLoading(false);
+        console.error("Error fetching areas: ", error);
+        setLoadingAreas(false);
       }
     );
     return () => unsubscribe();
@@ -62,6 +88,7 @@ export default function KaryawanTab() {
     const dataToExport = exportSource.map((u, index) => {
       const pribadi = u.dataPribadi || {};
       const keluarga = u.dataKeluarga || {};
+      const gajiData = u.dataGaji || {};
       const daftarAnak = keluarga.daftarAnak || [];
       const stringDataAnak = daftarAnak.length > 0
         ? daftarAnak.map((anak, i) => `${i + 1}. ${anak.namaAnak || '—'} (Tempat: ${anak.tempatLahirAnak || '—'}, Tgl: ${anak.tanggalLahirAnak || '—'})`).join("\n")
@@ -72,6 +99,10 @@ export default function KaryawanTab() {
         "Nama Lengkap": u.namaLengkap || "—",
         "NIK": u.nik || "—",
         "Jabatan": u.jabatan || "—",
+        "Area Penempatan": u.namaArea || "—",
+        "Gaji Pokok": gajiData.gaji ?? 0,
+        "Tunjangan Kehadiran": gajiData.tunjanganKehadiran ?? 0,
+        "Tunjangan Leader": u.jabatan === "leader" ? (gajiData.tunjanganLeader ?? 0) : "—",
         "No. Telp / WA": u.noHandphone || "—",
         "Email Kantor": u.email || "—",
         "Tempat Lahir": pribadi.tempatLahir || "—",
@@ -104,13 +135,14 @@ export default function KaryawanTab() {
     Swal.fire({ icon: "success", title: "Export Berhasil!", text: "Seluruh data karyawan aktif telah diunduh ke Excel.", timer: 2000, showConfirmButton: false });
   };
 
-  // Filter berdasarkan search dan status aktif
+  // Filter berdasarkan search, status aktif, dan area
   const filteredUsers = users.filter((u) => {
     const term = search.toLowerCase();
     const matchSearch =
       u.namaLengkap?.toLowerCase().includes(term) ||
       u.jabatan?.toLowerCase().includes(term) ||
-      u.email?.toLowerCase().includes(term);
+      u.email?.toLowerCase().includes(term) ||
+      u.namaArea?.toLowerCase().includes(term);
 
     const isAktif = u.isAktif !== false; // default aktif jika field belum ada
     const matchAktif =
@@ -118,12 +150,15 @@ export default function KaryawanTab() {
       (filterAktif === "aktif" && isAktif) ||
       (filterAktif === "nonaktif" && !isAktif);
 
-    return matchSearch && matchAktif;
+    const matchArea = filterArea === "semua" || u.areaId === filterArea;
+
+    return matchSearch && matchAktif && matchArea;
   });
 
   const getEditFormData = (user) => {
     const pribadi = user.dataPribadi || {};
     const keluarga = user.dataKeluarga || {};
+    const gajiData = user.dataGaji || {};
     return {
       id: user.id,
       namaLengkap: user.namaLengkap || "",
@@ -132,6 +167,11 @@ export default function KaryawanTab() {
       noHandphone: user.noHandphone || "",
       email: user.email || "",
       role: user.role || "karyawan",
+      areaId: user.areaId || "",
+      namaArea: user.namaArea || "",
+      gaji: gajiData.gaji ?? "",
+      tunjanganKehadiran: gajiData.tunjanganKehadiran ?? "",
+      tunjanganLeader: gajiData.tunjanganLeader ?? "",
       tempatLahir: pribadi.tempatLahir || "",
       tanggalLahir: pribadi.tanggalLahir || "",
       gender: pribadi.gender || "",
@@ -156,12 +196,20 @@ export default function KaryawanTab() {
     try {
       setSaving(true);
       const userRef = doc(db, "users", selectedUser.id);
+      const selectedArea = areaList.find((a) => a.id === editForm.areaId);
       const updateData = {
         namaLengkap: editForm.namaLengkap,
         nik: editForm.nik,
         jabatan: editForm.jabatan,
         noHandphone: editForm.noHandphone,
         role: editForm.role,
+        areaId: editForm.areaId || "",
+        namaArea: selectedArea?.nama_area || "",
+        dataGaji: {
+          gaji: Number(editForm.gaji) || 0,
+          tunjanganKehadiran: Number(editForm.tunjanganKehadiran) || 0,
+          tunjanganLeader: editForm.jabatan === "leader" ? (Number(editForm.tunjanganLeader) || 0) : 0,
+        },
         dataPribadi: {
           tempatLahir: editForm.tempatLahir,
           tanggalLahir: editForm.tanggalLahir,
@@ -183,6 +231,7 @@ export default function KaryawanTab() {
       setSaving(false);
       setSelectedUser(null);
       Swal.fire({ icon: "success", title: "Berhasil memperbarui data", timer: 1500, showConfirmButton: false });
+      fetchUsers();
     } catch (err) {
       console.error(err);
       setSaving(false);
@@ -210,6 +259,7 @@ export default function KaryawanTab() {
           });
           setSelectedUser(null);
           Swal.fire({ icon: "success", title: "Karyawan Dinonaktifkan", text: `${user.namaLengkap} berhasil dinonaktifkan.`, timer: 1800, showConfirmButton: false });
+          fetchUsers();
         } catch (error) {
           Swal.fire({ icon: "error", title: "Gagal", text: "Terjadi kesalahan saat menonaktifkan karyawan." });
         }
@@ -237,6 +287,7 @@ export default function KaryawanTab() {
           });
           setSelectedUser(null);
           Swal.fire({ icon: "success", title: "Karyawan Diaktifkan", text: `${user.namaLengkap} berhasil diaktifkan kembali.`, timer: 1800, showConfirmButton: false });
+          fetchUsers();
         } catch (error) {
           Swal.fire({ icon: "error", title: "Gagal", text: "Terjadi kesalahan saat mengaktifkan karyawan." });
         }
@@ -252,6 +303,12 @@ export default function KaryawanTab() {
 
   const isUserAktif = selectedUser?.isAktif !== false;
 
+  // Cek apakah area yang sedang dipilih di form edit statusnya nonaktif
+  const selectedAreaIsInactive =
+    editForm.areaId &&
+    areaList.length > 0 &&
+    areaList.find((a) => a.id === editForm.areaId)?.isAktif === false;
+
   return (
     <div className="space-y-5">
       {/* Header Aksi */}
@@ -260,13 +317,28 @@ export default function KaryawanTab() {
           <Search className="absolute left-4 top-2.5 h-4 w-4 text-slate-400" />
           <input
             type="text"
-            placeholder="Cari nama karyawan, email, atau jabatan..."
+            placeholder="Cari nama karyawan, email, jabatan, atau area..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-white border border-slate-200 rounded-xl pl-11 pr-4 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-[#740223] focus:ring-2 focus:ring-[#740223]/10 transition shadow-sm"
+            disabled={!hasSearched}
+            className="w-full bg-white border border-slate-200 rounded-xl pl-11 pr-4 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-[#740223] focus:ring-2 focus:ring-[#740223]/10 transition shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {/* Filter area */}
+          <select
+            value={filterArea}
+            onChange={(e) => setFilterArea(e.target.value)}
+            className="bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm focus:outline-none focus:border-[#740223] cursor-pointer shrink-0"
+          >
+            <option value="semua">Semua Area</option>
+            {areaList.map((area) => (
+              <option key={area.id} value={area.id}>
+                {area.nama_area}{area.isAktif === false ? " (Nonaktif)" : ""}
+              </option>
+            ))}
+          </select>
+
           {/* Filter aktif/nonaktif */}
           <div className="flex bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm text-[10px] font-bold uppercase tracking-wider shrink-0">
             {[
@@ -289,8 +361,19 @@ export default function KaryawanTab() {
           </div>
 
           <button
+            type="button"
+            onClick={handleApplyFilter}
+            disabled={loading}
+            className="bg-[#740223] hover:bg-[#5a011a] disabled:opacity-60 text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md transition active:scale-95 cursor-pointer shrink-0"
+          >
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SlidersHorizontal className="w-3.5 h-3.5 text-[#c5a85c]" />}
+            {loading ? "Memuat..." : "Tampilkan Data"}
+          </button>
+
+          <button
             onClick={handleExportExcel}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm transition active:scale-95 cursor-pointer shrink-0"
+            disabled={!hasSearched || filteredUsers.length === 0}
+            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm transition active:scale-95 cursor-pointer shrink-0"
           >
             <FileSpreadsheet className="w-4 h-4" /> Export
           </button>
@@ -308,7 +391,19 @@ export default function KaryawanTab() {
           </span>
         </div>
 
-        {loading ? (
+        {!hasSearched ? (
+          <div className="p-12 flex flex-col items-center justify-center gap-3 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-[#740223]/5 flex items-center justify-center">
+              <Inbox className="w-6 h-6 text-[#740223]" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-600">Belum Ada Data Ditampilkan</p>
+              <p className="text-[11px] text-slate-400 mt-1 max-w-xs">
+                Atur filter status &amp; area di atas (opsional), lalu tekan tombol <b>"Tampilkan Data"</b> untuk memuat daftar karyawan.
+              </p>
+            </div>
+          </div>
+        ) : loading ? (
           <div className="p-12 flex flex-col items-center justify-center gap-2">
             <Loader2 className="w-6 h-6 animate-spin text-[#740223]" />
             <p className="text-xs font-semibold text-slate-400">Memuat Data...</p>
@@ -328,10 +423,15 @@ export default function KaryawanTab() {
                       {u.namaLengkap?.charAt(0).toUpperCase() || "K"}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <h4 className="text-xs font-extrabold text-slate-800 tracking-tight truncate">{u.namaLengkap}</h4>
                         {!aktif && (
                           <span className="text-[9px] font-extrabold bg-slate-200 text-slate-500 px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">Nonaktif</span>
+                        )}
+                        {u.namaArea && (
+                          <span className="inline-flex items-center gap-1 text-[9px] font-extrabold bg-[#740223]/5 text-[#740223] px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">
+                            <MapPin className="w-2.5 h-2.5" /> {u.namaArea}
+                          </span>
                         )}
                       </div>
                       <p className="text-[10px] text-slate-400 font-semibold truncate uppercase tracking-wider mt-0.5">{u.jabatan || "Staff"} • {u.email}</p>
@@ -402,6 +502,10 @@ export default function KaryawanTab() {
                 className={`pb-2.5 text-[10px] font-bold uppercase tracking-wider border-b-2 transition cursor-pointer ${activeSection === "keluarga" ? "border-[#740223] text-[#740223]" : "border-transparent text-slate-400"}`}>
                 Susunan Keluarga
               </button>
+              <button onClick={() => setActiveSection("gaji")}
+                className={`pb-2.5 text-[10px] font-bold uppercase tracking-wider border-b-2 transition cursor-pointer ${activeSection === "gaji" ? "border-[#740223] text-[#740223]" : "border-transparent text-slate-400"}`}>
+                Gaji & Tunjangan
+              </button>
             </div>
 
             <div className="p-5 overflow-y-auto space-y-4 flex-1">
@@ -420,12 +524,43 @@ export default function KaryawanTab() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className={fieldLabel}>Jabatan</label>
-                      <input type="text" disabled={modalMode === "view"} value={editForm.jabatan || ""} onChange={(e) => setEditForm({...editForm, jabatan: e.target.value})} className={inputCls} />
+                      <select disabled={modalMode === "view"} value={editForm.jabatan || ""} onChange={(e) => setEditForm({...editForm, jabatan: e.target.value})} className={inputCls}>
+                        <option value="">Pilih Jabatan</option>
+                        <option value="karyawan">Karyawan</option>
+                        <option value="leader">Leader</option>
+                      </select>
                     </div>
                     <div>
                       <label className={fieldLabel}>No. WhatsApp</label>
                       <input type="text" disabled={modalMode === "view"} value={editForm.noHandphone || ""} onChange={(e) => setEditForm({...editForm, noHandphone: e.target.value})} className={inputCls} />
                     </div>
+                  </div>
+                  <div>
+                    <label className={fieldLabel}>Area Penempatan</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                        {loadingAreas ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MapPin className="w-3.5 h-3.5" />}
+                      </div>
+                      <select
+                        disabled={modalMode === "view" || loadingAreas}
+                        value={editForm.areaId || ""}
+                        onChange={(e) => setEditForm({ ...editForm, areaId: e.target.value })}
+                        className={`${inputCls} pl-9 appearance-none disabled:opacity-70`}
+                      >
+                        <option value="">— Belum ditentukan —</option>
+                        {areaList.map((area) => (
+                          <option key={area.id} value={area.id}>
+                            {area.nama_area}{area.isAktif === false ? " (Nonaktif)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {modalMode === "edit" && selectedAreaIsInactive && (
+                      <p className="text-[10px] text-amber-600 font-medium mt-1.5 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        Area yang dipilih sedang berstatus nonaktif.
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className={fieldLabel}>Email</label>
@@ -493,7 +628,7 @@ export default function KaryawanTab() {
                     </select>
                   </div>
                 </div>
-              ) : (
+              ) : activeSection === "keluarga" ? (
                 <div className="space-y-4">
                   <div>
                     <label className={fieldLabel}>Status Pernikahan</label>
@@ -587,6 +722,69 @@ export default function KaryawanTab() {
                     <div className="bg-amber-50 border border-amber-100 text-amber-800 p-4 rounded-xl flex gap-2 text-xs">
                       <Heart className="w-4 h-4 text-[#c5a85c] shrink-0 mt-0.5" />
                       <p>Status Belum Menikah, form pasangan dan anak tidak perlu diisi.</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex items-start gap-2.5">
+                    <Wallet className="w-4 h-4 text-[#c5a85c] shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Data gaji &amp; tunjangan bersifat rahasia. Hanya Admin yang dapat mengakses bagian ini.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className={fieldLabel}>Gaji Pokok</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-xs font-bold text-slate-400 pointer-events-none">Rp</span>
+                      <input
+                        type="number" min="0" step="1000"
+                        disabled={modalMode === "view"}
+                        value={editForm.gaji ?? ""}
+                        onChange={(e) => setEditForm({ ...editForm, gaji: e.target.value })}
+                        placeholder="0"
+                        className={`${inputCls} pl-9`}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={fieldLabel}>Tunjangan Kehadiran</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-xs font-bold text-slate-400 pointer-events-none">Rp</span>
+                      <input
+                        type="number" min="0" step="1000"
+                        disabled={modalMode === "view"}
+                        value={editForm.tunjanganKehadiran ?? ""}
+                        onChange={(e) => setEditForm({ ...editForm, tunjanganKehadiran: e.target.value })}
+                        placeholder="0"
+                        className={`${inputCls} pl-9`}
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5">Diberikan per kehadiran / bulan, sesuai kebijakan perusahaan.</p>
+                  </div>
+
+                  {editForm.jabatan === "leader" ? (
+                    <div>
+                      <label className={fieldLabel}>Tunjangan Leader</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-xs font-bold text-slate-400 pointer-events-none">Rp</span>
+                        <input
+                          type="number" min="0" step="1000"
+                          disabled={modalMode === "view"}
+                          value={editForm.tunjanganLeader ?? ""}
+                          onChange={(e) => setEditForm({ ...editForm, tunjanganLeader: e.target.value })}
+                          placeholder="0"
+                          className={`${inputCls} pl-9`}
+                        />
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1.5">Khusus diberikan untuk karyawan dengan jabatan Leader.</p>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 border border-amber-100 text-amber-800 p-4 rounded-xl flex gap-2 text-xs">
+                      <AlertCircle className="w-4 h-4 text-[#c5a85c] shrink-0 mt-0.5" />
+                      <p>Tunjangan Leader hanya berlaku untuk karyawan dengan jabatan <b>Leader</b>. Ubah jabatan di tab "Data Pribadi" jika diperlukan.</p>
                     </div>
                   )}
                 </div>

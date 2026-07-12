@@ -8,11 +8,12 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  MapPinned,
 } from "lucide-react";
 import AdminHomeTab from "./HomeTab";
 import KaryawanTab from "./KaryawanTab";
 import RekapAbsenTab from "./RekapAbsenTab";
-import PengaturanKantor from "./PengaturanKantor";
+import AreaTab from "./AreaTab";
 import logo from "../../assets/logo/only-logo-sap.png";
 
 export default function AdminIndex() {
@@ -37,8 +38,8 @@ export default function AdminIndex() {
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "karyawan", label: "Kelola Karyawan", icon: Users },
+    { id: "area", label: "Kelola Area", icon: MapPinned },
     { id: "rekap", label: "Rekap Absen", icon: ClipboardList },
-    { id: "pengaturan", label: "Pengaturan Kantor", icon: Sliders },
   ];
 
   return (
@@ -176,13 +177,13 @@ export default function AdminIndex() {
         <main className="px-5 md:px-10 -mt-8 md:-mt-4 relative z-20 flex-1 max-w-5xl w-full mx-auto pb-24 md:pb-10">
           <div className={activeTab === "dashboard" ? "" : "hidden"}><AdminHomeTab time={time} /></div>
           <div className={activeTab === "karyawan" ? "" : "hidden"}><KaryawanTab /></div>
+          <div className={activeTab === "area" ? "" : "hidden"}><AreaTab /></div>
           <div className={activeTab === "rekap" ? "" : "hidden"}><RekapAbsenTab /></div>
-          <div className={activeTab === "pengaturan" ? "" : "hidden"}><PengaturanKantor /></div>
         </main>
       </div>
 
       {/* ── BOTTOM NAV MOBILE ────────────────────────────── */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-100 px-4 py-2.5 flex justify-around items-center z-50 rounded-t-[24px] shadow-[0_-4px_20px_rgba(0,0,0,0.04)]">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-100 px-3 py-2.5 flex justify-around items-center z-50 rounded-t-[24px] shadow-[0_-4px_20px_rgba(0,0,0,0.04)] overflow-x-auto">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -190,7 +191,7 @@ export default function AdminIndex() {
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center gap-1 py-1 px-2 rounded-xl transition cursor-pointer ${
+              className={`flex flex-col items-center gap-1 py-1 px-2 rounded-xl transition cursor-pointer shrink-0 ${
                 isActive ? "text-[#740223]" : "text-slate-400"
               }`}
             >

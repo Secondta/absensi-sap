@@ -1,8 +1,11 @@
 // RekapAbsenTab.jsx - UI disesuaikan serasi dengan tab lainnya
+// Data absensi TIDAK di-fetch otomatis saat halaman dibuka.
+// Admin wajib memilih rentang tanggal (dan opsional area) lalu menekan
+// tombol "Tampilkan Data" agar query ke Firestore tetap ringan.
 import { useState, useEffect } from "react";
 import { db } from "../../firebase/config";
-import { collection, onSnapshot, query, where, getDocs } from "firebase/firestore";
-import { Calendar, Filter, FileSpreadsheet, Loader2, Search, ArrowRight, X, Clock, MapPin } from "lucide-react";
+import { collection, onSnapshot, query, where, getDocs, orderBy } from "firebase/firestore";
+import { Calendar, Filter, FileSpreadsheet, Loader2, Search, ArrowRight, X, Clock, MapPin, SlidersHorizontal, Inbox } from "lucide-react";
 import Swal from "sweetalert2";
 import * as XLSX from "xlsx";
 
@@ -15,72 +18,38 @@ export default function RekapAbsenTab() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterArea, setFilterArea] = useState("semua"); // "semua" | areaId
 
   // State Utama Data Firebase
   const [attendanceData, setAttendanceData] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  // Menandakan apakah admin sudah pernah menekan "Tampilkan Data"
+  const [hasSearched, setHasSearched] = useState(false);
+
+  // Daftar area untuk dropdown filter
+  const [areaList, setAreaList] = useState([]);
+  const [loadingAreas, setLoadingAreas] = useState(true);
 
   // State untuk Lazy Loading Detail Modal Absen
   const [selectedAbsen, setSelectedAbsen] = useState(null);
 
-  // Fetch Data Absensi Realtime dari Firestore
+  // Ambil daftar area (realtime) untuk filter — ringan, tidak masalah diambil otomatis
   useEffect(() => {
-    const fetchAttendanceData = async () => {
-      setLoading(true);
-      try {
-        // Ambil semua data dari collection attendance
-        const usersSnapshot = await getDocs(collection(db, "attendance"));
-        const allAttendance = [];
-        
-        for (const userDoc of usersSnapshot.docs) {
-          const userData = userDoc.data();
-          
-          // Cek apakah user memiliki data absensi (absenMasuk ATAU absenMusk ATAU absenPulang)
-          const hasAbsenMasuk = userData.absenMasuk || userData.absenMusk;
-          const hasAbsenPulang = userData.absenPulang;
-          
-          if (hasAbsenMasuk || hasAbsenPulang) {
-            // Handle field name typo: absenMusk -> absenMasuk
-            const absenMasukData = userData.absenMasuk || userData.absenMusk || null;
-            
-            // Ambil data absen dari user
-            const record = {
-              id: userDoc.id,
-              userId: userDoc.id,
-              namaLengkap: userData.namaLengkap || userData.nama || "—",
-              jabatan: userData.jabatan || userData.posisi || "Karyawan",
-              tanggal: userData.tanggal || null,
-              absenMasuk: absenMasukData,
-              absenPulang: hasAbsenPulang ? userData.absenPulang : null,
-              // Data tambahan untuk debugging
-              rawData: userData
-            };
-            
-            // Hanya tambahkan jika memiliki minimal satu absen dan tanggal valid
-            if (record.tanggal) {
-              allAttendance.push(record);
-            }
-          }
-        }
-        
-        console.log("Data yang ditemukan:", allAttendance); // Debugging
-        
-        // Sortir berdasarkan tanggal terbaru
-        allAttendance.sort((a, b) => {
-          if (!a.tanggal) return 1;
-          if (!b.tanggal) return -1;
-          return b.tanggal.localeCompare(a.tanggal);
-        });
-        
-        setAttendanceData(allAttendance);
-      } catch (error) {
-        console.error("Error fetching attendance data:", error);
-      } finally {
-        setLoading(false);
+    const unsubscribe = onSnapshot(
+      collection(db, "areas"),
+      (snapshot) => {
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.nama_area || "").localeCompare(b.nama_area || ""));
+        setAreaList(list);
+        setLoadingAreas(false);
+      },
+      (error) => {
+        console.error("Error fetching areas: ", error);
+        setLoadingAreas(false);
       }
-    };
-
-    fetchAttendanceData();
+    );
+    return () => unsubscribe();
   }, []);
 
   // Fungsi untuk memformat waktu
@@ -89,7 +58,7 @@ export default function RekapAbsenTab() {
     try {
       // Jika waktu sudah dalam format HH:MM:SS
       if (typeof waktuString === 'string' && waktuString.match(/^\d{2}:\d{2}:\d{2}$/)) return waktuString;
-      
+
       // Jika waktu dalam format ISO
       const date = new Date(waktuString);
       if (!isNaN(date.getTime())) {
@@ -107,7 +76,7 @@ export default function RekapAbsenTab() {
     try {
       const waktu = formatWaktu(waktuString);
       if (waktu === "—") return "Belum Absen";
-      
+
       const getMinutes = (timeStr) => {
         if (!timeStr) return 0;
         const parts = timeStr.toString().split(":");
@@ -116,10 +85,10 @@ export default function RekapAbsenTab() {
         }
         return 0;
       };
-      
+
       const waktuMinutes = getMinutes(waktu);
       const shiftMinutes = getMinutes(shiftStart);
-      
+
       if (waktuMinutes > shiftMinutes + 10) {
         return "Telat";
       }
@@ -129,16 +98,113 @@ export default function RekapAbsenTab() {
     }
   };
 
-  // Filter Data
+  // ── Ambil data absensi HANYA saat tombol "Tampilkan Data" ditekan ──────
+  const handleApplyFilter = async () => {
+    if (!startDate || !endDate) {
+      Swal.fire({
+        icon: "warning",
+        title: "Pilih Rentang Tanggal",
+        text: "Tanggal awal dan akhir wajib dipilih agar data yang diambil tidak terlalu berat.",
+        confirmButtonColor: "#740223",
+      });
+      return;
+    }
+    if (startDate > endDate) {
+      Swal.fire({
+        icon: "warning",
+        title: "Rentang Tanggal Tidak Valid",
+        text: "Tanggal awal tidak boleh lebih besar dari tanggal akhir.",
+        confirmButtonColor: "#740223",
+      });
+      return;
+    }
+
+    setLoading(true);
+    setHasSearched(true);
+    try {
+      // Query dibatasi rentang tanggal langsung di Firestore, bukan ambil semua dokumen
+      const attendanceQuery = query(
+        collection(db, "attendance"),
+        where("tanggal", ">=", startDate),
+        where("tanggal", "<=", endDate),
+        orderBy("tanggal", "desc")
+      );
+      const attendanceSnapshot = await getDocs(attendanceQuery);
+
+      if (attendanceSnapshot.empty) {
+        setAttendanceData([]);
+        setLoading(false);
+        return;
+      }
+
+      // Ambil data users untuk mapping uid -> area (dokumen attendance tidak menyimpan area langsung)
+      const usersSnapshot = await getDocs(collection(db, "users"));
+      const usersMap = {};
+      usersSnapshot.docs.forEach((uDoc) => {
+        usersMap[uDoc.id] = uDoc.data();
+      });
+
+      const allAttendance = [];
+
+      for (const userDoc of attendanceSnapshot.docs) {
+        const userData = userDoc.data();
+
+        // Cek apakah user memiliki data absensi (absenMasuk ATAU absenMusk ATAU absenPulang)
+        const hasAbsenMasuk = userData.absenMasuk || userData.absenMusk;
+        const hasAbsenPulang = userData.absenPulang;
+
+        if (hasAbsenMasuk || hasAbsenPulang) {
+          // Handle field name typo: absenMusk -> absenMasuk
+          const absenMasukData = userData.absenMasuk || userData.absenMusk || null;
+
+          // Cari profil user terkait untuk mengambil info area terkini
+          const uid = userData.uid || userDoc.id.split("_")[0];
+          const profil = usersMap[uid] || {};
+
+          const record = {
+            id: userDoc.id,
+            userId: userDoc.id,
+            uid,
+            namaLengkap: userData.namaLengkap || userData.nama || "—",
+            jabatan: userData.jabatan || userData.posisi || "Karyawan",
+            areaId: profil.areaId || userData.areaId || "",
+            namaArea: profil.namaArea || userData.namaArea || "—",
+            tanggal: userData.tanggal || null,
+            absenMasuk: absenMasukData,
+            absenPulang: hasAbsenPulang ? userData.absenPulang : null,
+            rawData: userData
+          };
+
+          if (record.tanggal) {
+            allAttendance.push(record);
+          }
+        }
+      }
+
+      setAttendanceData(allAttendance);
+    } catch (error) {
+      console.error("Error fetching attendance data:", error);
+      Swal.fire({
+        icon: "error",
+        title: "Gagal Memuat Data",
+        text: "Terjadi kesalahan saat mengambil data absensi. Coba lagi.",
+        confirmButtonColor: "#740223",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Filter Data (client-side: area & pencarian, dari data yang sudah di-fetch)
   const filteredAttendance = attendanceData.filter((item) => {
-    if (startDate && item.tanggal && item.tanggal < startDate) return false;
-    if (endDate && item.tanggal && item.tanggal > endDate) return false;
+    if (filterArea !== "semua" && item.areaId !== filterArea) return false;
 
     if (searchQuery) {
       const term = searchQuery.toLowerCase();
       const matchNama = item.namaLengkap?.toLowerCase().includes(term);
       const matchJabatan = item.jabatan?.toLowerCase().includes(term);
-      return matchNama || matchJabatan;
+      const matchArea = item.namaArea?.toLowerCase().includes(term);
+      return matchNama || matchJabatan || matchArea;
     }
     return true;
   });
@@ -160,6 +226,7 @@ export default function RekapAbsenTab() {
       "Tanggal": item.tanggal || "—",
       "Nama Karyawan": item.namaLengkap || "—",
       "Jabatan": item.jabatan || "—",
+      "Area": item.namaArea || "—",
       "Jam Masuk": item.absenMasuk?.waktu ? formatWaktu(item.absenMasuk.waktu) : "—",
       "Status Masuk": item.absenMasuk ? getStatus(item.absenMasuk.waktu) : "—",
       "Jam Pulang": item.absenPulang?.waktu ? formatWaktu(item.absenPulang.waktu) : "—",
@@ -190,36 +257,37 @@ export default function RekapAbsenTab() {
           <Search className="absolute left-4 top-2.5 h-4 w-4 text-slate-400" />
           <input
             type="text"
-            placeholder="Cari nama karyawan atau jabatan..."
+            placeholder="Cari nama karyawan, jabatan, atau area..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-slate-200 rounded-xl pl-11 pr-4 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-[#740223] focus:ring-2 focus:ring-[#740223]/10 transition shadow-sm"
+            disabled={!hasSearched}
+            className="w-full bg-white border border-slate-200 rounded-xl pl-11 pr-4 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-[#740223] focus:ring-2 focus:ring-[#740223]/10 transition shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
         <div className="flex gap-2">
           <button 
             onClick={handleExportExcel}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm transition active:scale-95 cursor-pointer shrink-0"
+            disabled={!hasSearched || filteredAttendance.length === 0}
+            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm transition active:scale-95 cursor-pointer shrink-0"
           >
             <FileSpreadsheet className="w-4 h-4" /> Export
           </button>
         </div>
       </div>
 
-      {/* Filter Tanggal Card */}
+      {/* Filter Tanggal & Area Card */}
       <Card className="p-5">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-[#740223]/10 flex items-center justify-center">
               <Calendar className="w-4.5 h-4.5 text-[#740223]" />
             </div>
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Filter Periode</p>
-              <p className="text-xs font-medium text-slate-500">Pilih rentang tanggal untuk melihat laporan</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Filter Periode & Area</p>
             </div>
           </div>
           
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto">
             <div className="flex items-center gap-2">
               <input 
                 type="date" 
@@ -235,6 +303,35 @@ export default function RekapAbsenTab() {
                 className="w-full sm:w-auto bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 px-4 py-2.5 rounded-xl focus:bg-white focus:outline-none focus:border-[#740223] transition shadow-sm"
               />
             </div>
+
+            <div className="relative w-full sm:w-56">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                {loadingAreas ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MapPin className="w-3.5 h-3.5" />}
+              </div>
+              <select
+                value={filterArea}
+                onChange={(e) => setFilterArea(e.target.value)}
+                disabled={loadingAreas}
+                className="w-full bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 pl-9 pr-4 py-2.5 rounded-xl focus:bg-white focus:outline-none focus:border-[#740223] transition shadow-sm appearance-none cursor-pointer disabled:opacity-60"
+              >
+                <option value="semua">Semua Area</option>
+                {areaList.map((area) => (
+                  <option key={area.id} value={area.id}>
+                    {area.nama_area}{area.isAktif === false ? " (Nonaktif)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleApplyFilter}
+              disabled={loading}
+              className="w-full sm:w-auto bg-[#740223] hover:bg-[#5a011a] disabled:opacity-60 text-white font-bold text-[11px] uppercase tracking-wider px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md transition active:scale-95 cursor-pointer shrink-0"
+            >
+              {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SlidersHorizontal className="w-3.5 h-3.5 text-[#c5a85c]" />}
+              {loading ? "Memuat..." : "Tampilkan Data"}
+            </button>
           </div>
         </div>
       </Card>
@@ -254,7 +351,19 @@ export default function RekapAbsenTab() {
           </div>
         </div>
 
-        {loading ? (
+        {!hasSearched ? (
+          <div className="p-12 flex flex-col items-center justify-center gap-3 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-[#740223]/5 flex items-center justify-center">
+              <Inbox className="w-6 h-6 text-[#740223]" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-600">Belum Ada Data Ditampilkan</p>
+              <p className="text-[11px] text-slate-400 mt-1 max-w-xs">
+                Pilih rentang tanggal (dan area jika perlu) di atas, lalu tekan tombol <b>"Tampilkan Data"</b> untuk memuat rekap absensi.
+              </p>
+            </div>
+          </div>
+        ) : loading ? (
           <div className="p-12 flex flex-col items-center justify-center gap-2">
             <Loader2 className="w-6 h-6 animate-spin text-[#740223]" />
             <p className="text-xs font-semibold text-slate-400">Memuat Data Absensi...</p>
@@ -277,6 +386,11 @@ export default function RekapAbsenTab() {
                       <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
                         {item.jabatan || "Staff"}
                       </span>
+                      {item.namaArea && item.namaArea !== "—" && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-extrabold bg-[#740223]/5 text-[#740223] px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          <MapPin className="w-2.5 h-2.5" /> {item.namaArea}
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-3 mt-1">
                       <p className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
@@ -349,6 +463,12 @@ export default function RekapAbsenTab() {
                   <Calendar className="w-3 h-3 text-slate-400" />
                   <p className="text-[10px] font-medium text-slate-500">{selectedAbsen.tanggal || "Tanggal tidak tersedia"}</p>
                 </div>
+                {selectedAbsen.namaArea && selectedAbsen.namaArea !== "—" && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <MapPin className="w-3 h-3 text-slate-400" />
+                    <p className="text-[10px] font-medium text-slate-500">{selectedAbsen.namaArea}</p>
+                  </div>
+                )}
               </div>
 
               {/* Log Absen Masuk */}

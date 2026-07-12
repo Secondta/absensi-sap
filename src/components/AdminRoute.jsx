@@ -10,17 +10,11 @@ import { Navigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 export default function AdminRoute({ children }) {
-  const { currentUser, userProfile } = useAuth();
+  const { currentUser, userProfile, loading } = useAuth();
 
-  // Belum login sama sekali
-  if (!currentUser) {
-    return <Navigate to="/login" replace />;
-  }
-
-  // Sudah login tapi bukan admin → arahkan ke dashboard karyawan
-  if (userProfile?.role !== "admin") {
-    return <Navigate to="/" replace />;
-  }
+  if (loading) return <LoadingSpinner />; // Tambahkan pengecekan loading
+  if (!currentUser) return <Navigate to="/login" replace />;
+  if (userProfile?.role !== "admin") return <Navigate to="/" replace />;
 
   return children;
 }
